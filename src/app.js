@@ -5,11 +5,11 @@ const app = express()
 const bodyParser = require('body-parser')
 
 const jsonParser = bodyParser.json()
-const Validator = require('jsonschema').Validator;
-const validator = new Validator();
+const Validator = require('jsonschema').Validator
+const validator = new Validator()
 const ReqRiderSchema = require('../.schema/rides.req.json')
-
-
+const logger = require('./logger')
+const Joi = require('joi')
 
 module.exports = (db) => {
   /**
@@ -65,15 +65,14 @@ module.exports = (db) => {
      *      }
      *     ]
      *
-     * @apiError UserNotFound The <code>id</code> of the User was not found
+     * 
      */
   app.post('/rides', jsonParser, (req, res, next) => {
     const { errors } = validator.validate(req.body, ReqRiderSchema)
-    if(errors.length) {
-      const errorMessage = errors.reduce((t,v)=>{return t+`${v.property.replace('instance.','')} ${v.message}; `},"")
-      console.log(errorMessage)
-      return res.status(400).json({
-        error_code: 'SERVER_ERROR',
+    if (errors.length) {
+      const errorMessage = errors.reduce((t, v) => { return t + `${v.property.replace('instance.', '')} ${v.message}; ` }, '')
+      return res.send({
+        error_code: 'VALIDATION_ERROR',
         message: errorMessage
       })
     }
@@ -83,6 +82,7 @@ module.exports = (db) => {
 
     db.run('INSERT INTO Rides(startLat, startLong, endLat, endLong, riderName, driverName, driverVehicle) VALUES (?, ?, ?, ?, ?, ?, ?)', values, function (err) {
       if (err) {
+        logger.error(err.message)
         return res.send({
           error_code: 'SERVER_ERROR',
           message: 'Unknown error'
@@ -91,6 +91,7 @@ module.exports = (db) => {
 
       db.all('SELECT * FROM Rides WHERE rideID = ?', this.lastID, (err, rows) => {
         if (err) {
+          logger.error(err.message)
           return res.send({
             error_code: 'SERVER_ERROR',
             message: 'Unknown error'
@@ -101,10 +102,55 @@ module.exports = (db) => {
       })
     })
   })
-
-  app.get('/rides', (req, res) => {
-    db.all('SELECT * FROM Rides', (err, rows) => {
+ /**
+     * @api {get} /rides get collection of Rides
+     * @apiName GetRides
+     * @apiGroup Rides
+     * @apiParam {Number} limit limit pagination
+     * @apiParam {Number} page specify page to display
+     *
+     * @apiExample {curl} Example usage:
+     *     curl --location --request GET 'localhost:8010/rides?limit=2&page=-1'
+     *
+     * @apiSchema {jsonschema=../.schema/rides.res.json} apiSuccess
+     *
+     * @apiSuccessExample {json} Success-Response:
+     *     HTTP/1.1 200 OK
+     *     {
+     *        "page": "1",
+     *        "total_page": 0.5,
+     *        "data": [
+     *            {
+     *                "rideID": 1,
+     *                "startLat": 20,
+     *                "startLong": 3000,
+     *                "endLat": 2,
+     *                "endLong": 2,
+     *                "riderName": "abc",
+     *                "driverName": "2wee",
+     *                "driverVehicle": "driver_vehicle1",
+     *                "created": "2020-10-05 01:17:23"
+     *            }
+     *        ]
+     *     }
+     *
+     * 
+     */
+  app.get('/rides', jsonParser, (req, res) => {
+    const schema = Joi.object({
+      limit: Joi.number().positive(),
+      page: Joi.number().positive()
+    })
+    const { error } = schema.validate(req.query)
+    if(error) return res.send({
+      error_ode: 'VALIDATION_ERROR',
+      message: error.message
+    })
+    const limit = req.query.limit ? `limit ${req.query.limit}`:'';
+    const skip = req.query.page ? `offset ${req.query.limit * (req.query.page -1)}`:''
+    db.all(`SELECT * FROM Rides ${limit} ${skip}`, (err, rows) => {
       if (err) {
+        logger.error(err.message)
         return res.send({
           error_code: 'SERVER_ERROR',
           message: 'Unknown error'
@@ -117,14 +163,37 @@ module.exports = (db) => {
           message: 'Could not find any rides'
         })
       }
+      const paginate = rows;
 
-      res.send(rows)
+      db.all(`SELECT * FROM Rides`,(err, rows)=>{
+        if (err) {
+          logger.error(err.message)
+          return res.send({
+            error_code: 'SERVER_ERROR',
+            message: 'Unknown error'
+          })
+        }
+  
+        if (rows.length === 0) {
+          return res.send({
+            error_code: 'RIDES_NOT_FOUND_ERROR',
+            message: 'Could not find any rides'
+          })
+        }
+        res.send({
+          page: req.query.page,
+          total_page: rows.length / req.query.limit,
+          data: paginate
+        })
+      })
+      
     })
   })
 
   app.get('/rides/:id', (req, res) => {
     db.all(`SELECT * FROM Rides WHERE rideID='${req.params.id}'`, (err, rows) => {
       if (err) {
+        logger.error(err.message)
         return res.send({
           error_code: 'SERVER_ERROR',
           message: 'Unknown error'
